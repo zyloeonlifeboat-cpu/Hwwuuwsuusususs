@@ -1,0 +1,754 @@
+if _G.TRACEDBYVANTA_LOADED then return end
+_G.TRACEDBYVANTA_LOADED = true
+pcall(function() if setfpscap then setfpscap(240) end end)
+repeat task.wait() until game:IsLoaded()
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local Workspace         = game:GetService("Workspace")
+local UIS               = game:GetService("UserInputService")
+local GuiService        = game:GetService("GuiService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+local CoreGui
+pcall(function() if gethui then CoreGui = gethui() end end)
+CoreGui = CoreGui or game:GetService("CoreGui")
+
+local LP     = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local player, camera, workspace = LP, Camera, Workspace
+local UserInputService = UIS
+
+hookmetamethod    = hookmetamethod    or function() return function() end end
+newcclosure       = newcclosure       or function(f) return f end
+checkcaller       = checkcaller       or function() return false end
+getnamecallmethod = getnamecallmethod or function() return "" end
+getrawmetatable   = getrawmetatable   or function(o) return getmetatable(o) end
+setreadonly       = setreadonly       or function() end
+
+local BASE = "https://raw.githubusercontent.com/FacilityHUB/UI-Facility/refs/heads/main/"
+local source = game:HttpGet(BASE .. "main.luau")
+local Library = loadstring(source)()
+assert(type(Library) == "table", "ui library failed to load")
+Library.BaseUrl = BASE
+
+local SaveManager = {}
+local SM = { Library = Library, Folder = "tracedbyvanta/game", Ignore = {}, AutoloadFile = "autoload.txt" }
+local FS = Library.FileSystem
+function SaveManager:SetLibrary(lib) SM.Library = lib end
+function SaveManager:SetFolder(folder) SM.Folder = folder; Library:BuildFolders(folder) end
+function SaveManager:SetIgnoreIndexes(list) SM.Ignore = list or {} end
+function SaveManager:IgnoreThemeSettings() end
+function SaveManager:GetConfigPath(name) return SM.Folder .. "/configs/" .. tostring(name) .. ".json" end
+function SaveManager:GetAutoloadPath() return SM.Folder .. "/settings/" .. SM.AutoloadFile end
+function SaveManager:Save(name)
+    if not name or name == "" then return false end
+    local data = SM.Library:GetConfig(SM.Ignore)
+    local ok, encoded = pcall(function() return game:GetService("HttpService"):JSONEncode(data) end)
+    if not ok then return false end
+    Library:BuildFolders(SM.Folder); Library:BuildFolders(SM.Folder .. "/configs")
+    FS:Write(self:GetConfigPath(name), encoded); return true
+end
+function SaveManager:Load(name)
+    if not name or name == "" then return false end
+    local raw = FS:Read(self:GetConfigPath(name)); if not raw then return false end
+    local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(raw) end)
+    if not ok or type(data) ~= "table" then return false end
+    SM.Library:LoadConfig(data, SM.Ignore); return true
+end
+function SaveManager:Delete(name) if not name or name == "" then return false end; FS:Delete(self:GetConfigPath(name)); return true end
+function SaveManager:List()
+    local files = FS:List(SM.Folder .. "/configs"); local out = {}
+    for _, f in ipairs(files) do local nm = string.match(f, "^(.+)%.json$"); if nm then table.insert(out, nm) end end
+    table.sort(out); return out
+end
+function SaveManager:SetAutoloadConfig(name)
+    Library:BuildFolders(SM.Folder); Library:BuildFolders(SM.Folder .. "/settings")
+    FS:Write(self:GetAutoloadPath(), tostring(name or "")); return true
+end
+function SaveManager:GetAutoload()
+    local raw = FS:Read(self:GetAutoloadPath()); if not raw or raw == "" then return nil end
+    return raw
+end
+function SaveManager:ClearAutoload() return self:SetAutoloadConfig("") end
+function SaveManager:LoadAutoloadConfig()
+    local name = self:GetAutoload(); if not name or name == "" then return false end
+    return self:Load(name)
+end
+Library.SaveManager = SaveManager
+
+local InterfaceManager = Library.InterfaceManager
+local ThemeManager     = Library.ThemeManager
+
+local WHITE = Color3.fromRGB(255, 255, 255)
+local DARK_PURPLE = Color3.fromRGB(80, 15, 120)
+
+local function notify(title, text, kind)
+    pcall(function()
+        if kind == "success" and Library.Success then Library:Success(title, text, 3)
+        elseif kind == "warn" and Library.Warn then Library:Warn(title, text, 3)
+        elseif kind == "error" and Library.Error then Library:Error(title, text, 3)
+        else Library:Notify({ Title = title, Text = text, Duration = 3 }) end
+    end)
+end
+
+local HITPART_LIST = {
+    "head","neck","uppertorso","lowertorso","leftupperarm","leftlowerarm","lefthand",
+    "rightupperarm","rightlowerarm","righthand","leftupperleg","leftlowerleg","leftfoot",
+    "rightupperleg","rightlowerleg","rightfoot","humanoidrootpart",
+}
+local HITPART_MAP = {
+    ["head"]="Head",["neck"]="Neck",["uppertorso"]="UpperTorso",["lowertorso"]="LowerTorso",
+    ["leftupperarm"]="LeftUpperArm",["leftlowerarm"]="LeftLowerArm",["lefthand"]="LeftHand",
+    ["rightupperarm"]="RightUpperArm",["rightlowerarm"]="RightLowerArm",["righthand"]="RightHand",
+    ["leftupperleg"]="LeftUpperLeg",["leftlowerleg"]="LeftLowerLeg",["leftfoot"]="LeftFoot",
+    ["rightupperleg"]="RightUpperLeg",["rightlowerleg"]="RightLowerLeg",["rightfoot"]="RightFoot",
+    ["humanoidrootpart"]="HumanoidRootPart",
+}
+
+local MOUSE_ARG_NAMES = {
+    ["UpdateMousePos"] = true, ["GetMousePos"] = true, ["MousePos"] = true,
+    ["MOUSE"] = true, ["MousePosUpdate"] = true, ["UpdateMousePosI2"] = true,
+    ["UpdateMousePosI"] = true, ["UpdateAim"] = true, ["MoonUpdateMousePos"] = true,
+    ["UpdateMousePos1"] = true,
+}
+
+local function hasChar(p)
+    return p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+end
+local function isKnocked(p)
+    if not hasChar(p) then return false end
+    local be = p.Character:FindFirstChild("BodyEffects"); if not be then return false end
+    local ko = be:FindFirstChild("K.O"); return ko and ko.Value or false
+end
+local function isSeated(p)
+    if not p or not p.Character then return false end
+    local hum = p.Character:FindFirstChildOfClass("Humanoid")
+    return hum and hum.SeatPart ~= nil
+end
+local function isFriend(p)
+    if not p then return false end
+    local ok, r = pcall(function() return LP:IsFriendsWith(p.UserId) end)
+    return ok and r
+end
+local function sameTeam(p)
+    if not p.Team or not LP.Team then return false end
+    return p.Team == LP.Team
+end
+local function hasForcefield(p)
+    if not hasChar(p) then return false end
+    return p.Character:FindFirstChildOfClass("ForceField") ~= nil
+end
+
+local function buildFilter(targetChar)
+    local filter, seen = {}, {}
+    local function add(o)
+        if not o or seen[o] then return end
+        seen[o] = true
+        table.insert(filter, o)
+    end
+    if Camera then add(Camera) end
+    if LP.Character then
+        add(LP.Character)
+        for _, d in ipairs(LP.Character:GetDescendants()) do add(d) end
+    end
+    if targetChar then
+        add(targetChar)
+        for _, d in ipairs(targetChar:GetDescendants()) do add(d) end
+    end
+    return filter
+end
+
+local function makeRayParams(filter)
+    local params = RaycastParams.new()
+    local ok = pcall(function() params.FilterType = Enum.RaycastFilterType.Exclude end)
+    if not ok then pcall(function() params.FilterType = Enum.RaycastFilterType.Blacklist end) end
+    params.FilterDescendantsInstances = filter or {}
+    params.IgnoreWater = true
+    return params
+end
+
+local function behindWall(p, hitpart)
+    if not hasChar(p) then return true end
+    local part = p.Character:FindFirstChild(hitpart or "Head") or p.Character:FindFirstChild("HumanoidRootPart")
+    if not part then return true end
+    local origin = Camera.CFrame.Position
+    local dir = part.Position - origin
+    if dir.Magnitude < 0.5 then return false end
+    local res = Workspace:Raycast(origin, dir, makeRayParams(buildFilter(p.Character)))
+    if not res then return false end
+    if res.Instance and res.Instance:IsDescendantOf(p.Character) then return false end
+    return true
+end
+
+local Aim = {
+    enabled      = false,
+    camlock      = false,
+    aimPart      = "UpperTorso",
+    predictionH  = 0.1767,
+    predictionV  = 0.1767,
+    jumpOffset   = 0.66,
+    fallOffset   = 1,
+    smoothEnabled= false,
+    smoothValue  = 0.59,
+    lockKey      = Enum.KeyCode.Q,
+    target       = nil,
+    remembered   = nil,
+
+    lookAt       = false,
+    viewTarget   = false,
+    tracer       = false,
+    highlight    = false,
+    autoAir      = false,
+    autoAirDelay = 0.208,
+
+    antiGround   = false,
+
+    check = {
+        KO = false, Seated = false, Wall = false,
+        Friend = false, Team = false, Forcefield = false,
+    },
+}
+
+local Highlight = Instance.new("Highlight")
+Highlight.FillColor = WHITE
+Highlight.OutlineColor = WHITE
+Highlight.FillTransparency = 0.5
+Highlight.OutlineTransparency = 0
+Highlight.Enabled = false
+Highlight.Parent = CoreGui
+
+local function passes(p)
+    if not p or p == LP then return false end
+    if not hasChar(p) then return false end
+    local hum = p.Character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if Aim.check.Team and sameTeam(p) then return false end
+    if Aim.check.Friend and isFriend(p) then return false end
+    if Aim.check.KO and isKnocked(p) then return false end
+    if Aim.check.Seated and isSeated(p) then return false end
+    if Aim.check.Forcefield and hasForcefield(p) then return false end
+    if Aim.check.Wall and behindWall(p, Aim.aimPart) then return false end
+    return true
+end
+
+local function pickClosest()
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local best, bestDist = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if passes(p) then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+                if on then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d < bestDist then best, bestDist = p, d end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function aimPos(target)
+    if not target or not target.Character then return nil end
+    local char = target.Character
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local aimPart = char:FindFirstChild(Aim.aimPart) or char:FindFirstChild("Head") or hrp
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    local base = aimPart.Position
+    if hum then
+        local state = hum:GetState()
+        if state == Enum.HumanoidStateType.Jumping then
+            base = char.Head and char.Head.Position + Vector3.new(0, Aim.jumpOffset, 0) or base
+        elseif state == Enum.HumanoidStateType.Freefall then
+            base = char.Head and char.Head.Position - Vector3.new(0, Aim.fallOffset, 0) or base
+        else
+            base = char.Head and char.Head.Position or base
+        end
+    end
+
+    local vel = hrp.AssemblyLinearVelocity or hrp.Velocity
+    local predicted = base + Vector3.new(
+        vel.X * Aim.predictionH,
+        vel.Y * Aim.predictionV,
+        vel.Z * Aim.predictionH
+    )
+    if Aim.antiGround and predicted.Y < 0 then
+        predicted = Vector3.new(predicted.X, 0, predicted.Z)
+    end
+    return predicted
+end
+
+local mt = getrawmetatable(game)
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if method == "FireServer" and Aim.enabled and Aim.target and Aim.target.Character then
+        local args = { ... }
+        local first = args[1]
+        if type(first) == "string" and MOUSE_ARG_NAMES[first] then
+            for i = 1, #args do
+                if typeof(args[i]) == "Vector3" then
+                    local p = aimPos(Aim.target)
+                    if p then args[i] = p end
+                    break
+                end
+            end
+            return oldNamecall(self, unpack(args))
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+setreadonly(mt, true)
+
+local tracerLine
+pcall(function()
+    tracerLine = Drawing.new("Line")
+    tracerLine.Thickness = 1
+    tracerLine.Color = WHITE
+    tracerLine.Transparency = 1
+    tracerLine.Visible = false
+end)
+
+local tracerPos = "Bottom"
+
+local autoAirLast = 0
+
+RunService.RenderStepped:Connect(function()
+    if Aim.target and Aim.target.Character then
+        local char = Aim.target.Character
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local pos = aimPos(Aim.target)
+
+        if Aim.lookAt and hum and pos then
+            hum.AutoRotate = false
+            local myChar = LP.Character
+            local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if myHRP then
+                myHRP.CFrame = CFrame.new(myHRP.Position, Vector3.new(pos.X, myHRP.Position.Y, pos.Z))
+            end
+        elseif hum then
+            hum.AutoRotate = true
+        end
+
+        if Aim.camlock and pos then
+            local goal = CFrame.new(Camera.CFrame.Position, pos)
+            if Aim.smoothEnabled then
+                Camera.CFrame = Camera.CFrame:Lerp(goal, Aim.smoothValue)
+            else
+                Camera.CFrame = goal
+            end
+        end
+
+        if Aim.viewTarget and hum then
+            Camera.CameraSubject = hum
+        end
+
+        if Aim.highlight then
+            Highlight.Adornee = char
+            Highlight.Enabled = true
+        else
+            Highlight.Adornee = nil
+            Highlight.Enabled = false
+        end
+
+        if Aim.tracer and tracerLine and pos then
+            local vp = Camera.ViewportSize
+            local from
+            if tracerPos == "Mouse" then
+                from = UserInputService:GetMouseLocation()
+            elseif tracerPos == "Top" then
+                from = Vector2.new(vp.X / 2, 0)
+            else
+                from = Vector2.new(vp.X / 2, vp.Y)
+            end
+            local to, on = Camera:WorldToViewportPoint(char.HumanoidRootPart.Position)
+            if on then
+                tracerLine.Visible = true
+                tracerLine.From = from
+                tracerLine.To = Vector2.new(to.X, to.Y)
+                tracerLine.Color = Highlight.OutlineColor
+            else
+                tracerLine.Visible = false
+            end
+        elseif tracerLine then
+            tracerLine.Visible = false
+        end
+
+        if Aim.autoAir and hum then
+            local st = hum:GetState()
+            if st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall then
+                if tick() - autoAirLast >= Aim.autoAirDelay then
+                    autoAirLast = tick()
+                    local myChar = LP.Character
+                    local tool = myChar and myChar:FindFirstChildOfClass("Tool")
+                    if tool then pcall(function() tool:Activate() end) end
+                end
+            end
+        end
+    else
+        if tracerLine then tracerLine.Visible = false end
+        Highlight.Adornee = nil
+        Highlight.Enabled = false
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum and not Aim.viewTarget then
+            if Camera.CameraSubject ~= hum then Camera.CameraSubject = hum end
+        end
+        if LP.Character then
+            local myHum = LP.Character:FindFirstChildOfClass("Humanoid")
+            if myHum then myHum.AutoRotate = true end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not Aim.enabled then return end
+    if Aim.target and not passes(Aim.target) then
+        Aim.target = nil
+        Aim.remembered = nil
+    end
+    if not Aim.target then
+        local t = pickClosest()
+        if t then
+            Aim.target = t
+            Aim.remembered = t
+        end
+    end
+end)
+
+local TriggerBot = (function()
+    local M = { enabled = false }
+    local HPrediction = 0.155
+    local VPrediction = 0.155
+    local HitPart     = "Head"
+    local main_remote = ReplicatedStorage:FindFirstChild("MAINEVENT") or ReplicatedStorage:FindFirstChild("MainEvent")
+
+    local function localHasKatana()
+        if not LP.Character then return false end
+        local tool = LP.Character:FindFirstChildWhichIsA("Tool")
+        if not tool then return false end
+        return string.lower(tool.Name):find("katana", 1, true) ~= nil
+    end
+    local function getEquippedGun()
+        if not LP.Character then return nil end
+        local tool = LP.Character:FindFirstChildWhichIsA("Tool")
+        if not tool or not tool:FindFirstChild("Handle") then return nil end
+        return tool
+    end
+    local function getAimRay()
+        if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+            return Camera.CFrame.Position, Camera.CFrame.LookVector
+        end
+        local mousePos = UserInputService:GetMouseLocation()
+        local inset = GuiService:GetGuiInset()
+        local ray = Camera:ViewportPointToRay(mousePos.X - inset.X, mousePos.Y - inset.Y)
+        return ray.Origin, ray.Direction
+    end
+    local function getAimScreenPoint()
+        if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+            return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        end
+        local mousePos = UserInputService:GetMouseLocation()
+        local inset = GuiService:GetGuiInset()
+        return Vector2.new(mousePos.X - inset.X, mousePos.Y - inset.Y)
+    end
+    local function crosshairHits(p)
+        if not hasChar(p) then return false end
+        local origin, dir = getAimRay()
+        local hit = Workspace:Raycast(origin, dir.Unit * 1000, makeRayParams(buildFilter(nil)))
+        if not hit or not hit.Instance then return false end
+        return hit.Instance:IsDescendantOf(p.Character)
+    end
+    local function getAimedPlayer()
+        local origin, dir = getAimRay()
+        local hit = Workspace:Raycast(origin, dir.Unit * 1000, makeRayParams(buildFilter(nil)))
+        if hit and hit.Instance then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if hasChar(p) and hit.Instance:IsDescendantOf(p.Character) then
+                    if passes(p) then return p end
+                    return nil
+                end
+            end
+        end
+        local aimScreen = getAimScreenPoint()
+        local best, bestDist = nil, 22
+        for _, p in ipairs(Players:GetPlayers()) do
+            if passes(p) then
+                local part = p.Character:FindFirstChild(HitPart) or p.Character:FindFirstChild("Head")
+                if part then
+                    local sp, on = Camera:WorldToViewportPoint(part.Position)
+                    if on and sp.Z > 0 then
+                        local d = (Vector2.new(sp.X, sp.Y) - aimScreen).Magnitude
+                        if d < bestDist then bestDist, best = d, p end
+                    end
+                end
+            end
+        end
+        if best and crosshairHits(best) then return best end
+        return nil
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if not M.enabled then return end
+        if localHasKatana() then return end
+        local gun = getEquippedGun()
+        if not gun then return end
+        local target = getAimedPlayer()
+        if not target then return end
+        if hasForcefield(target) then return end
+        local char = target.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local aimPart = char:FindFirstChild(HitPart) or char:FindFirstChild("Head") or hrp
+        local pos = aimPart.Position
+        local vel = hrp.AssemblyLinearVelocity
+        local predicted = Vector3.new(
+            pos.X + vel.X * HPrediction,
+            pos.Y + vel.Y * VPrediction,
+            pos.Z + vel.Z * HPrediction
+        )
+        if main_remote then
+            pcall(function() main_remote:FireServer("MOUSE", predicted) end)
+            pcall(function() main_remote:FireServer("MousePos", predicted) end)
+            pcall(function() main_remote:FireServer("UpdateMousePosI", predicted) end)
+            pcall(function() main_remote:FireServer("UpdateMousePos", predicted) end)
+        end
+        pcall(function() gun:Activate() end)
+    end)
+
+    function M.setEnabled(v) M.enabled = v and true or false end
+    function M.setHPrediction(v) HPrediction = tonumber(v) or HPrediction end
+    function M.setVPrediction(v) VPrediction = tonumber(v) or VPrediction end
+    function M.setHitPart(v) HitPart = v or "Head" end
+    return M
+end)()
+
+local Window = Library:Window({ Title = "tracedbyvanta", Width = 640, Height = 620 })
+
+local LegitBotTab = Window:Tab("legitbot")
+local MiscTab     = Window:Tab("misc")
+local ConfigTab   = Window:Tab("settings")
+
+local aimSec = LegitBotTab:Section("target aim", 1)
+aimSec:Toggle({ Text = "enabled", Flag = "aim_enable", Default = false, Callback = function(v)
+    Aim.enabled = v
+    if not v then
+        Aim.target = nil
+        Aim.remembered = nil
+    else
+        local t = pickClosest()
+        if t then Aim.target = t; Aim.remembered = t end
+    end
+    notify("aim", v and "enabled" or "disabled", v and "success" or "warn")
+end }):Keybind({ Default = "Q", Flag = "aim_key", Callback = function(k) Aim.lockKey = k end })
+
+aimSec:Toggle({ Text = "camlock", Flag = "aim_camlock", Default = false, Callback = function(v) Aim.camlock = v end })
+aimSec:Toggle({ Text = "smooth", Flag = "aim_smooth", Default = false, Callback = function(v) Aim.smoothEnabled = v end })
+aimSec:Input({ Text = "smooth value", Flag = "aim_smoothval", Default = "0.59", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.smoothValue = n end end })
+aimSec:Toggle({ Text = "look at", Flag = "aim_lookat", Default = false, Callback = function(v) Aim.lookAt = v end })
+aimSec:Toggle({ Text = "view target", Flag = "aim_view", Default = false, Callback = function(v) Aim.viewTarget = v end })
+aimSec:Toggle({ Text = "tracer", Flag = "aim_tracer", Default = false, Callback = function(v) Aim.tracer = v end })
+aimSec:Toggle({ Text = "highlight", Flag = "aim_highlight", Default = false, Callback = function(v) Aim.highlight = v end })
+
+local hitSec = LegitBotTab:Section("hitparts", 1)
+hitSec:Dropdown({ Text = "aim part", Flag = "aim_part", Options = HITPART_LIST, Default = "uppertorso",
+    Callback = function(v) Aim.aimPart = HITPART_MAP[v] or "UpperTorso" end })
+
+local optSec = LegitBotTab:Section("aim options", 2)
+optSec:Input({ Text = "prediction x", Flag = "aim_pred_x", Default = "0.1767", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.predictionH = n end end })
+optSec:Input({ Text = "prediction y", Flag = "aim_pred_y", Default = "0.1767", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.predictionV = n end end })
+optSec:Input({ Text = "jump offset", Flag = "aim_jump", Default = "0.66", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.jumpOffset = n end end })
+optSec:Input({ Text = "fall offset", Flag = "aim_fall", Default = "1", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.fallOffset = n end end })
+optSec:Toggle({ Text = "anti ground shot", Flag = "aim_aground", Default = false,
+    Callback = function(v) Aim.antiGround = v end })
+optSec:Toggle({ Text = "auto air", Flag = "aim_autoair", Default = false, Callback = function(v) Aim.autoAir = v end })
+optSec:Input({ Text = "auto air delay", Flag = "aim_autoairdelay", Default = "0.208", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then Aim.autoAirDelay = n end end })
+
+local checkSec = LegitBotTab:Section("aim checks", 2)
+checkSec:Toggle({ Text = "wall check", Flag = "aim_wall", Default = false, Callback = function(v) Aim.check.Wall = v end })
+checkSec:Toggle({ Text = "knocked check", Flag = "aim_ko", Default = false, Callback = function(v) Aim.check.KO = v end })
+checkSec:Toggle({ Text = "seated check", Flag = "aim_seated", Default = false, Callback = function(v) Aim.check.Seated = v end })
+checkSec:Toggle({ Text = "team check", Flag = "aim_team", Default = false, Callback = function(v) Aim.check.Team = v end })
+checkSec:Toggle({ Text = "friend check", Flag = "aim_friend", Default = false, Callback = function(v) Aim.check.Friend = v end })
+checkSec:Toggle({ Text = "forcefield check", Flag = "aim_ff", Default = false, Callback = function(v) Aim.check.Forcefield = v end })
+
+local tbSec = LegitBotTab:Section("triggerbot", 1)
+tbSec:Toggle({ Text = "enabled", Flag = "tb_enabled", Default = false, Callback = function(v)
+    TriggerBot.setEnabled(v)
+    notify("triggerbot", v and "enabled" or "disabled", v and "success" or "warn")
+end })
+tbSec:Input({ Text = "prediction x", Flag = "tb_pred_x", Default = "0.155", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then TriggerBot.setHPrediction(n) end end })
+tbSec:Input({ Text = "prediction y", Flag = "tb_pred_y", Default = "0.155", Numeric = true,
+    Callback = function(v) local n = tonumber(v); if n then TriggerBot.setVPrediction(n) end end })
+tbSec:Input({ Text = "hit part", Flag = "tb_part", Default = "Head",
+    Callback = function(v) if v and v ~= "" then TriggerBot.setHitPart(v) end end })
+
+local rfSec = MiscTab:Section("rapid fire", 1)
+local rapidEnabled = false
+rfSec:Toggle({ Text = "enabled", Flag = "misc_rf", Default = false, Callback = function(v)
+    rapidEnabled = v
+end })
+RunService.Heartbeat:Connect(function()
+    if not rapidEnabled then return end
+    local char = LP.Character
+    if not char then return end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool then pcall(function() tool:Activate() end) end
+end)
+
+local btSec = MiscTab:Section("bullet tracers", 1)
+local btEnabled = false
+local btColor = DARK_PURPLE
+local btTex = "electro"
+local btWidth = 1
+local btDur = 3
+local btActive = {}
+local btTextures = {
+    electro = "rbxassetid://139193109954329",
+    cool = "rbxassetid://116848240236550",
+    cum = "rbxassetid://88263664141635",
+    none = "",
+}
+btSec:Toggle({ Text = "enabled", Flag = "bt_enabled", Default = false, Callback = function(v)
+    btEnabled = v
+end })
+btSec:ColorPicker({ Text = "color", Flag = "bt_color", Default = DARK_PURPLE, Callback = function(c) btColor = c end })
+btSec:Dropdown({ Text = "texture", Flag = "bt_tex", Options = { "electro","cool","cum","none" }, Default = "electro",
+    Callback = function(v) btTex = v end })
+btSec:Slider({ Text = "width", Flag = "bt_w", Min = 0.1, Max = 5, Decimals = 1, Default = 1,
+    Callback = function(v) btWidth = v end })
+btSec:Slider({ Text = "duration", Flag = "bt_d", Min = 0.5, Max = 10, Decimals = 1, Default = 3,
+    Callback = function(v) btDur = v end })
+
+Workspace.DescendantAdded:Connect(function(d)
+    if not btEnabled then return end
+    if not d:IsA("Beam") then return end
+    if d.Name ~= "gb" then return end
+    task.defer(function()
+        local ray = d.Parent
+        if not ray then return end
+        local a = ray:IsA("BasePart") and ray.Position or (ray.PrimaryPart and ray.PrimaryPart.Position)
+        if not a then return end
+        local h = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not h or (h.Position - a).Magnitude > 15 then return end
+        local b = d.Attachment1 and d.Attachment1.WorldCFrame.Position
+        if not b then return end
+
+        local p0 = Instance.new("Part"); p0.Anchored = true; p0.CanCollide = false; p0.Transparency = 1; p0.Size = Vector3.zero; p0.CFrame = CFrame.new(a); p0.Parent = Workspace
+        local p1 = Instance.new("Part"); p1.Anchored = true; p1.CanCollide = false; p1.Transparency = 1; p1.Size = Vector3.zero; p1.CFrame = CFrame.new(b); p1.Parent = Workspace
+        local a0 = Instance.new("Attachment", p0)
+        local a1 = Instance.new("Attachment", p1)
+        local beam = Instance.new("Beam")
+        beam.Attachment0 = a0
+        beam.Attachment1 = a1
+        beam.Width0 = btWidth
+        beam.Width1 = btWidth
+        beam.FaceCamera = true
+        beam.LightEmission = 10
+        beam.Transparency = NumberSequence.new(0)
+        beam.Texture = btTextures[btTex] or btTextures.electro
+        beam.TextureMode = Enum.TextureMode.Wrap
+        beam.TextureLength = 10
+        beam.Color = ColorSequence.new(btColor)
+        beam.Parent = p0
+        btActive[#btActive + 1] = { p0, p1, tick() }
+        pcall(function() d:Destroy() end)
+    end)
+end)
+
+RunService.RenderStepped:Connect(function()
+    local now = tick()
+    for i = #btActive, 1, -1 do
+        local e = btActive[i]
+        if now - e[3] > btDur then
+            if e[1] then e[1]:Destroy() end
+            if e[2] then e[2]:Destroy() end
+            table.remove(btActive, i)
+        end
+    end
+end)
+
+local configs = ConfigTab:Section("configs", 1)
+local configName = "default"
+configs:Search({ Placeholder = "config name", Label = "name", Live = true, Callback = function(t) configName = t end })
+local configDropdown = configs:Dropdown({ Text = "saved configs", Flag = "selected_config", Options = { "" }, Default = "",
+    Callback = function(v) if v and v ~= "" then configName = v end end })
+local function refreshConfigDropdown()
+    local list = SaveManager:List(); if #list == 0 then list = { "" } end
+    pcall(function() configDropdown:SetOptions(list) end)
+end
+refreshConfigDropdown()
+configs:ButtonRow({
+    { Text = "save", Callback = function()
+        if configName == "" then notify("config", "name first", "warn"); return end
+        if SaveManager:Save(configName) then refreshConfigDropdown(); notify("config", "saved " .. configName, "success")
+        else notify("config", "failed", "error") end
+    end },
+    { Text = "load", Callback = function()
+        if configName == "" then notify("config", "name first", "warn"); return end
+        if SaveManager:Load(configName) then notify("config", "loaded " .. configName, "success")
+        else notify("config", "failed", "error") end
+    end },
+})
+configs:ButtonRow({
+    { Text = "delete", Callback = function()
+        if configName == "" then return end
+        SaveManager:Delete(configName); refreshConfigDropdown(); notify("config", "deleted", "success")
+    end },
+    { Text = "set autoload", Callback = function()
+        if configName == "" then return end
+        SaveManager:SetAutoloadConfig(configName); refreshConfigDropdown(); notify("config", "autoload set", "success")
+    end },
+})
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Aim.lockKey then
+        if Aim.enabled then
+            Aim.enabled = false
+            Aim.target = nil
+            Aim.remembered = nil
+            notify("aim", "disabled", "warn")
+        else
+            Aim.enabled = true
+            local t = pickClosest()
+            if t then Aim.target = t; Aim.remembered = t; notify("aim", "locked " .. t.DisplayName, "success")
+            else notify("aim", "enabled, no target", "success") end
+        end
+    end
+end)
+
+SaveManager:SetLibrary(Library)
+Library:BuildFolders("tracedbyvanta")
+Library:BuildFolders("tracedbyvanta/game")
+SaveManager:SetFolder("tracedbyvanta/game")
+
+if InterfaceManager then
+    pcall(function() InterfaceManager:SetLibrary(Library) end)
+    pcall(function() InterfaceManager:SetWindow(Window) end)
+    pcall(function() InterfaceManager:SetFolder("tracedbyvanta") end)
+    if InterfaceManager.BuildInterfaceSection then
+        pcall(function() InterfaceManager:BuildInterfaceSection(ConfigTab, 1) end)
+    end
+end
+if ThemeManager then
+    pcall(function() ThemeManager:SetLibrary(Library) end)
+    pcall(function() ThemeManager:SetFolder("tracedbyvanta") end)
+    if ThemeManager.BuildThemeSection then
+        pcall(function() ThemeManager:BuildThemeSection(ConfigTab, 1) end)
+    end
+end
+
+notify("tracedbyvanta", "loaded", "success")
+SaveManager:LoadAutoloadConfig()
